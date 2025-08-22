@@ -1,12 +1,11 @@
 import locale
 import os
 import gspread
-import re
 from dotenv import load_dotenv
 from datetime import datetime
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from src.utils.find_first_negative_number import find_first_negative
+from src.utils.convert_to_brl import parse_brl
 
 
 locale.setlocale(locale.LC_ALL, "pt_BR.UTF-8")
@@ -30,7 +29,7 @@ class GoogleSheetsAPIClient:
             creds.refresh(Request())
         return creds
     
-    def update_sheet(self, refresh_token: str, spreadsheet_id: str, type: str, value: float, date: datetime):
+    def update_sheet(self, refresh_token: str, spreadsheet_id: str, type: str, value: float, date: datetime, date_now: datetime):
         if not refresh_token or not spreadsheet_id:
             raise ValueError("Credenciais ou ID da planilha não fornecidos.")
         
@@ -52,21 +51,22 @@ class GoogleSheetsAPIClient:
         col_to_update = month.col + col_map.get(type)
 
         if col_to_update:
-            worksheet.update_cell(row=day.row, col=col_to_update, value=f'={value.replace(",", ".")}')
-            balance = worksheet.cell(row=day.row, col=(month.col + 4)).value
-            month_balance = worksheet.col_values(col=(month.col + 4))
-            month_balance = [
-                float(
-                    re.sub(r"[^\d,.\-]", "", v)     # remove tudo que não for número, vírgula, ponto ou sinal
-                    .replace(".", "")               # tira separador de milhar
-                    .replace(",", ".")              # troca vírgula decimal por ponto
-                    .replace("-.", "-0.")           # garante que "-.50" virem "-0.50" se aparecer
-                    .replace(" ", "")               # remove espaços extras
-                )
-                for v in month_balance[2:] if v.strip()
-            ]
-            next_negative_balance, day_from_next_negative_balance = find_first_negative(month_balance)
+            worksheet.update_cell(row=day.row, col=col_to_update, value=f'={value}')
 
-            return f'Lançamento de {type.lower()} (R$ {value}) feito com sucesso em {date.strftime("%d/%m/%Y")}\nSaldo de hoje: R$ {next_negative_balance}\nProximo saldo negativo este mes: R$ {next_negative_balance} no dia {(day_from_next_negative_balance + 1)}'
+            month_balance = worksheet.col_values(col=(month.col + 4))
+            month_balance_converted = [parse_brl(v) for v in month_balance[2:] if v.strip()]
+
+            balance_today = month_balance_converted[date_now.day - 1]            
+
+            if balance_today < 0:
+                return f'Lançamento de {type.lower()} (R$ {value}) feito com sucesso em {date.strftime("%d/%m/%Y")}\n\nSaldo de hoje: R$ {balance_today}\n\nSaldo ultimo dia do mes: {month_balance_converted[-1]}'
+
+            negative = next(((i, v) for i, v in enumerate(month_balance_converted) if v < 0), None)
+
+            if negative:
+                index, negative_value = negative
+                return f'Lançamento de {type.lower()} (R$ {value}) feito com sucesso em {date.strftime("%d/%m/%Y")}\n\nSaldo de hoje: R$ {balance_today}\n\nProximo saldo negativo este mes: R$ {negative_value} no dia {(index + 1)}\n\nSaldo ultimo dia do mes: {month_balance_converted[-1]}'
+                
+            return f'Lançamento de {type.lower()} (R$ {value}) feito com sucesso em {date.strftime("%d/%m/%Y")}\n\nSaldo de hoje: R$ {balance_today}\n\nSaldo ultimo dia do mes: {month_balance_converted[-1]}'
         
         return "Tipo de lançamento inválido."
